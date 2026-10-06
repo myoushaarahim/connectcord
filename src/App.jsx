@@ -6,26 +6,38 @@ function App() {
   const [password, setPassword] = useState("");
 
   const createUser = async (e) => {
-    e.preventDefault();
+  e.preventDefault();
 
-    const response = await fetch("http://localhost:5000/api/users", {
-      method: "POST",
+  try {
+    const response = await fetch(
+      "http://localhost:5000/api/auth/register",
+      {
+        method: "POST",
 
-      headers: {
-        "Content-Type": "application/json",
-      },
+        headers: {
+          "Content-Type": "application/json",
+        },
 
-      body: JSON.stringify({
-        username,
-        email,
-        password,
-      }),
-    });
+        body: JSON.stringify({
+          username,
+          email,
+          password,
+        }),
+      }
+    );
 
     const data = await response.json();
 
-    console.log(data);
-  };
+    if (!response.ok) {
+      console.log("Registration failed:", data.message);
+      return;
+    }
+
+    console.log("Registration successful:", data);
+  } catch (error) {
+    console.error("Request failed:", error);
+  }
+};
 
   return (
     <div>
