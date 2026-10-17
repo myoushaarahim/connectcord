@@ -61,6 +61,39 @@ const Icon = ({ name, size = 18 }) => {
   );
 };
 
+// Isolated audio stream component to prevent React re-renders from re-triggering playback
+function RemoteAudioStream({ stream }) {
+  const audioRef = useRef(null);
+
+  useEffect(() => {
+    const el = audioRef.current;
+    if (!el || !stream) return;
+    if (el.srcObject !== stream) {
+      el.srcObject = stream;
+    }
+    el.play().catch(() => {});
+  }, [stream]);
+
+  return <audio ref={audioRef} autoPlay playsInline />;
+}
+
+// Ensure Opus audio codec keeps transmitting (disable DTX which cuts off quiet speech/syllables)
+const optimizeSdp = (sdp) => {
+  if (!sdp) return sdp;
+  return sdp.replace(/a=fmtp:(\d+) (.*)/g, (match, pt, params) => {
+    if (params.includes("opus") || pt === "111") {
+      let updated = params;
+      if (!updated.includes("usedtx=")) {
+        updated += ";usedtx=0";
+      } else {
+        updated = updated.replace(/usedtx=1/g, "usedtx=0");
+      }
+      return `a=fmtp:${pt} ${updated}`;
+    }
+    return match;
+  });
+};
+
 export default function VoiceCallTest({ socket, channelId }) {
   const [status, setStatus] = useState("Not connected");
   const [isJoined, setIsJoined] = useState(false);
@@ -240,6 +273,9 @@ export default function VoiceCallTest({ socket, channelId }) {
         await addPendingCandidates(from, pc);
 
         const answer = await pc.createAnswer();
+        if (answer.sdp) {
+          answer.sdp = optimizeSdp(answer.sdp);
+        }
         await pc.setLocalDescription(answer);
 
         socket.emit("voice:answer", {
@@ -315,7 +351,7 @@ export default function VoiceCallTest({ socket, channelId }) {
         stream = await navigator.mediaDevices.getUserMedia({
           audio: {
             echoCancellation: true,
-            noiseSuppression: true,
+            noiseSuppression: false,
             autoGainControl: false,
           },
           video: false,
@@ -359,6 +395,9 @@ export default function VoiceCallTest({ socket, channelId }) {
               );
 
               const offer = await pc.createOffer();
+              if (offer.sdp) {
+                offer.sdp = optimizeSdp(offer.sdp);
+              }
               await pc.setLocalDescription(offer);
 
               socket.emit("voice:offer", {
@@ -536,19 +575,7 @@ export default function VoiceCallTest({ socket, channelId }) {
             </span>
 
             {participant.stream && (
-              <audio
-                autoPlay
-                playsInline
-                ref={(element) => {
-                  if (
-                    element &&
-                    element.srcObject !== participant.stream
-                  ) {
-                    element.srcObject = participant.stream;
-                    element.play().catch(() => { });
-                  }
-                }}
-              />
+              <RemoteAudioStream stream={participant.stream} />
             )}
           </div>
         ))}
