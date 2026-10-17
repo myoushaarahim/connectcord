@@ -421,7 +421,7 @@ function App() {
           <Icon name="phone" />
         </button>
         <button className="icon-button" onClick={() => notify('Video calling will be powered by WebRTC.')} title="Video call"><Icon name="video" /></button><span className="header-separator" /><button className={`icon-button ${showDetails ? 'pressed' : ''}`} onClick={() => setShowDetails(!showDetails)} title="Toggle details"><Icon name="inbox" /></button><button className="icon-button" onClick={() => notify('More conversation options coming soon.')} title="More"><Icon name="more" /></button></div></header>
-      <div className="conversation-banner"><div className="banner-icon"><Icon name="sparkle" size={19} /></div><div><strong>A little corner of the internet.</strong><span>Good ideas, good people, no noise.</span></div><button onClick={() => notify('You’re already part of the conversation!')}>Say hello <span>↗</span></button></div>
+      {!showVoiceCall && <div className="conversation-banner"><div className="banner-icon"><Icon name="sparkle" size={19} /></div><div><strong>A little corner of the internet.</strong><span>Good ideas, good people, no noise.</span></div><button onClick={() => notify('You’re already part of the conversation!')}>Say hello <span>↗</span></button></div>}
       {showVoiceCall && (() => {
         const channel = channelItems.find(
           (item) => item.name === activeChannel
