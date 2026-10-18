@@ -39,6 +39,16 @@ export const attachSocketServer = (httpServer) => {
   // Track active sockets per user so multiple tabs don't mark someone offline prematurely.
   const activeSocketsByUser = new Map();
 
+  const checkChannelAccess = async (channelId, userId) => {
+    if (!mongoose.isValidObjectId(channelId)) return false;
+    const channel = await Channel.findById(channelId).select("workspace type recipients");
+    if (!channel) return false;
+    if (channel.type === "dm") {
+      return channel.recipients?.some((id) => String(id) === String(userId));
+    }
+    return await Workspace.exists({ _id: channel.workspace, members: userId });
+  };
+
   io.on("connection", (socket) => {
     const userId = String(socket.userId);
     const userSockets = activeSocketsByUser.get(userId) || new Set();
@@ -52,11 +62,8 @@ export const attachSocketServer = (httpServer) => {
 
     socket.on("typing:start", async (channelId) => {
       try {
-        if (!mongoose.isValidObjectId(channelId)) return;
-        const channel = await Channel.findById(channelId).select("workspace");
-        if (!channel) return;
-        const isMember = await Workspace.exists({ _id: channel.workspace, members: socket.userId });
-        if (!isMember || !socket.rooms.has(`channel:${channelId}`)) return;
+        const hasAccess = await checkChannelAccess(channelId, socket.userId);
+        if (!hasAccess || !socket.rooms.has(`channel:${channelId}`)) return;
         socket.to(`channel:${channelId}`).emit("typing:changed", {
           userId,
           username: socket.data.username || "Someone",
@@ -71,21 +78,8 @@ export const attachSocketServer = (httpServer) => {
     // WebRTC signaling: join the voice room for an authorized channel.
     socket.on("voice:join", async (channelId, callback) => {
       try {
-        if (!mongoose.isValidObjectId(channelId)) {
-          return callback?.({ ok: false, message: "Invalid channel" });
-        }
-
-        const channel = await Channel.findById(channelId).select("workspace");
-        if (!channel) {
-          return callback?.({ ok: false, message: "Channel not found" });
-        }
-
-        const isMember = await Workspace.exists({
-          _id: channel.workspace,
-          members: socket.userId,
-        });
-
-        if (!isMember) {
+        const hasAccess = await checkChannelAccess(channelId, socket.userId);
+        if (!hasAccess) {
           return callback?.({
             ok: false,
             message: "You do not have access to this voice channel",
@@ -172,6 +166,22 @@ export const attachSocketServer = (httpServer) => {
       relayVoiceSignal("voice:ice-candidate", payload);
     });
 
+    socket.on("voice:video-toggle", (payload) => {
+      try {
+        const { channelId, hasVideo, isScreen } = payload || {};
+        if (!mongoose.isValidObjectId(channelId)) return;
+        const room = `voice:${channelId}`;
+        if (!socket.rooms.has(room)) return;
+        socket.to(room).emit("voice:video-toggle", {
+          peerId: socket.id,
+          hasVideo: Boolean(hasVideo),
+          isScreen: Boolean(isScreen),
+        });
+      } catch {
+        // Best effort
+      }
+    });
+
     // Leave a voice room and notify the other participants.
     socket.on("voice:leave", (channelId) => {
       if (!mongoose.isValidObjectId(channelId)) return;
@@ -209,18 +219,8 @@ export const attachSocketServer = (httpServer) => {
 
     socket.on("channel:join", async (channelId, callback) => {
       try {
-        if (!mongoose.isValidObjectId(channelId)) {
-          return callback?.({ ok: false, message: "Invalid channel" });
-        }
-
-        const channel = await Channel.findById(channelId).select("workspace");
-        if (!channel) return callback?.({ ok: false, message: "Channel not found" });
-
-        const isMember = await Workspace.exists({
-          _id: channel.workspace,
-          members: socket.userId,
-        });
-        if (!isMember) {
+        const hasAccess = await checkChannelAccess(channelId, socket.userId);
+        if (!hasAccess) {
           return callback?.({ ok: false, message: "You do not have access to this channel" });
         }
 

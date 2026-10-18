@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import Workspace from "../models/Workspace.js";
 import Channel from "../models/Channel.js";
+import Message from "../models/Message.js";
 import { notifyWorkspaceMembers } from "../sse/eventHub.js";
 
 export const listChannels = async (req, res) => {
@@ -38,3 +39,50 @@ export const createChannel = async (req, res) => {
     return res.status(500).json({ message: "Could not create channel" });
   }
 };
+
+export const deleteChannel = async (req, res) => {
+  try {
+    const { workspaceId, channelId } = req.params;
+    if (!mongoose.isValidObjectId(workspaceId) || !mongoose.isValidObjectId(channelId)) {
+      return res.status(400).json({ message: "Invalid workspace or channel ID" });
+    }
+
+    const workspace = await Workspace.findOne({ _id: workspaceId, members: req.userId });
+    if (!workspace) {
+      return res.status(404).json({ message: "Workspace not found or unauthorized" });
+    }
+
+    // Check how many channels exist in the workspace
+    const channelCount = await Channel.countDocuments({ workspace: workspaceId });
+    if (channelCount <= 1) {
+      return res.status(400).json({ message: "A workspace must have at least one channel. Cannot delete the last channel." });
+    }
+
+    const channel = await Channel.findOne({ _id: channelId, workspace: workspaceId });
+    if (!channel) {
+      return res.status(404).json({ message: "Channel not found in this workspace" });
+    }
+
+    // Delete all messages in this channel
+    await Message.deleteMany({ channel: channelId });
+
+    // Delete the channel
+    await Channel.deleteOne({ _id: channelId });
+
+    // Notify workspace members via SSE
+    void notifyWorkspaceMembers(workspaceId, req.userId, {
+      type: "channel_deleted",
+      title: "Channel deleted",
+      message: `#${channel.name} was deleted`,
+      workspaceId: String(workspaceId),
+      channelId: String(channelId),
+      createdAt: new Date().toISOString(),
+    });
+
+    return res.json({ message: "Channel deleted successfully", channelId });
+  } catch (error) {
+    console.error("deleteChannel:", error);
+    return res.status(500).json({ message: "Could not delete channel" });
+  }
+};
+

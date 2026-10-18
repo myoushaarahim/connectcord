@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import { randomBytes } from "node:crypto";
 import Workspace from "../models/Workspace.js";
 import Channel from "../models/Channel.js";
+import Message from "../models/Message.js";
 import { notifyWorkspaceMembers } from "../sse/eventHub.js";
 
 export const listWorkspaces = async (req, res) => {
@@ -84,3 +85,52 @@ export const getWorkspace = async (req, res) => {
     return res.status(500).json({ message: "Could not load workspace" });
   }
 };
+
+export const deleteWorkspace = async (req, res) => {
+  try {
+    const { workspaceId } = req.params;
+    if (!mongoose.isValidObjectId(workspaceId)) {
+      return res.status(400).json({ message: "Invalid workspace ID" });
+    }
+
+    const workspace = await Workspace.findById(workspaceId);
+    if (!workspace) {
+      return res.status(404).json({ message: "Workspace not found" });
+    }
+
+    // Only owner can delete the workspace
+    if (String(workspace.owner) !== String(req.userId)) {
+      return res.status(403).json({ message: "Only the workspace owner can delete this workspace" });
+    }
+
+    // Find all channels belonging to this workspace
+    const channels = await Channel.find({ workspace: workspaceId }).select("_id");
+    const channelIds = channels.map((c) => c._id);
+
+    // Delete all messages in these channels
+    if (channelIds.length > 0) {
+      await Message.deleteMany({ channel: { $in: channelIds } });
+    }
+
+    // Delete all channels
+    await Channel.deleteMany({ workspace: workspaceId });
+
+    // Notify workspace members via SSE before removing workspace document
+    void notifyWorkspaceMembers(workspaceId, req.userId, {
+      type: "workspace_deleted",
+      title: "Workspace deleted",
+      message: `"${workspace.name}" was deleted by its owner`,
+      workspaceId: String(workspaceId),
+      createdAt: new Date().toISOString(),
+    });
+
+    // Delete the workspace document
+    await Workspace.deleteOne({ _id: workspaceId });
+
+    return res.json({ message: "Workspace deleted successfully", workspaceId });
+  } catch (error) {
+    console.error("deleteWorkspace:", error);
+    return res.status(500).json({ message: "Could not delete workspace" });
+  }
+};
+

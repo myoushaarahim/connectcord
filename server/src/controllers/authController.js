@@ -133,3 +133,24 @@ export const getCurrentUser = async (req, res) => {
     return res.status(500).json({ message: "Server error" });
   }
 };
+
+export const listUsers = async (req, res) => {
+  try {
+    const users = await User.find({ _id: { $ne: req.userId } })
+      .select("username email createdAt")
+      .sort({ username: 1 })
+      .lean();
+
+    return res.json({
+      users: users.map((u) => ({
+        id: u._id,
+        username: u.username,
+        email: u.email,
+        createdAt: u.createdAt,
+      })),
+    });
+  } catch (error) {
+    console.error("listUsers error:", error);
+    return res.status(500).json({ message: "Could not fetch users" });
+  }
+};

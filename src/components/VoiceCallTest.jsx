@@ -1,5 +1,5 @@
-
 import { useEffect, useRef, useState } from "react";
+import { sounds } from "../utils/audioEffects";
 
 const Icon = ({ name, size = 18 }) => {
   const paths = {
@@ -25,6 +25,13 @@ const Icon = ({ name, size = 18 }) => {
         <path d="M5 14h2a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2ZM19 14h-2a2 2 0 0 0-2 2v3a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2v-5a2 2 0 0 0-2-2Z" />
       </>
     ),
+    "headphones-off": (
+      <>
+        <path d="M3 14v-3a9 9 0 0 1 18 0v3" />
+        <path d="M5 14h2a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2ZM19 14h-2a2 2 0 0 0-2 2v3a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2v-5a2 2 0 0 0-2-2Z" />
+        <path d="m2 2 20 20" />
+      </>
+    ),
     mic: (
       <>
         <rect x="9" y="2" width="6" height="12" rx="3" />
@@ -40,6 +47,46 @@ const Icon = ({ name, size = 18 }) => {
       <>
         <path d="M10.5 13.5a16 16 0 0 0 3.7 3.4l1.9-1.9a2 2 0 0 1 1.9-.6l2.8.5a2 2 0 0 1 1.7 2v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.4 19.4 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7l.5 2.8" />
         <path d="m2 2 20 20" />
+      </>
+    ),
+    video: (
+      <>
+        <rect x="3" y="5" width="13" height="14" rx="3" />
+        <path d="m16 10 5-3v10l-5-3" />
+      </>
+    ),
+    "video-off": (
+      <>
+        <path d="M10.66 6H14a2 2 0 0 1 2 2v2.34l1 1L22 8v8M2 2l20 20M3 7.8A2 2 0 0 0 2 9v7a2 2 0 0 0 2 2h10a2 2 0 0 0 1.73-1" />
+      </>
+    ),
+    screen: (
+      <>
+        <rect x="2" y="3" width="20" height="14" rx="2" />
+        <path d="M8 21h8M12 17v4" />
+      </>
+    ),
+    "screen-off": (
+      <>
+        <path d="M1 1l22 22M4 4H2a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16M8 21h8M12 17v4" />
+      </>
+    ),
+    maximize: (
+      <>
+        <path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3" />
+      </>
+    ),
+    minimize: (
+      <>
+        <path d="M8 3v3a2 2 0 0 1-2 2H3M21 8h-3a2 2 0 0 1-2-2V3M3 16h3a2 2 0 0 1 2 2v3M16 21v-3a2 2 0 0 1 2-2h3" />
+      </>
+    ),
+    flip: (
+      <>
+        <path d="M8 3 4 7l4 4" />
+        <path d="M4 7h16" />
+        <path d="m16 21 4-4-4-4" />
+        <path d="M20 17H4" />
       </>
     ),
   };
@@ -62,7 +109,7 @@ const Icon = ({ name, size = 18 }) => {
 };
 
 // Isolated audio stream component to prevent React re-renders from re-triggering playback
-function RemoteAudioStream({ stream }) {
+function RemoteAudioStream({ stream, isDeafened }) {
   const audioRef = useRef(null);
 
   useEffect(() => {
@@ -71,8 +118,9 @@ function RemoteAudioStream({ stream }) {
     if (el.srcObject !== stream) {
       el.srcObject = stream;
     }
+    el.muted = Boolean(isDeafened);
     el.play().catch(() => {});
-  }, [stream]);
+  }, [stream, isDeafened]);
 
   return <audio ref={audioRef} autoPlay playsInline />;
 }
@@ -94,21 +142,366 @@ const optimizeSdp = (sdp) => {
   });
 };
 
-export default function VoiceCallTest({ socket, channelId }) {
+// Web Audio API hook to detect voice activity in real time
+function useAudioActivity(stream, isMuted = false) {
+  const [isSpeaking, setIsSpeaking] = useState(false);
+
+  useEffect(() => {
+    if (!stream || isMuted) {
+      setIsSpeaking(false);
+      return;
+    }
+
+    const audioTracks = stream.getAudioTracks();
+    if (!audioTracks.length || !audioTracks[0].enabled) {
+      setIsSpeaking(false);
+      return;
+    }
+
+    let audioContext;
+    let analyser;
+    let source;
+    let animationFrameId;
+    let speakingTimeout = null;
+
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+
+      audioContext = new AudioCtx();
+      analyser = audioContext.createAnalyser();
+      analyser.fftSize = 128;
+      analyser.smoothingTimeConstant = 0.4;
+
+      source = audioContext.createMediaStreamSource(stream);
+      source.connect(analyser);
+
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+      const sampleVolume = () => {
+        if (!analyser) return;
+        analyser.getByteFrequencyData(dataArray);
+
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+          sum += dataArray[i];
+        }
+        const avg = sum / dataArray.length;
+
+        if (avg > 16) {
+          setIsSpeaking(true);
+          clearTimeout(speakingTimeout);
+          speakingTimeout = setTimeout(() => {
+            setIsSpeaking(false);
+          }, 350);
+        }
+
+        animationFrameId = requestAnimationFrame(sampleVolume);
+      };
+
+      sampleVolume();
+    } catch {
+      // AudioContext initialization fallback
+    }
+
+    return () => {
+      cancelAnimationFrame(animationFrameId);
+      clearTimeout(speakingTimeout);
+      if (source) source.disconnect();
+      if (audioContext && audioContext.state !== "closed") {
+        audioContext.close().catch(() => {});
+      }
+      setIsSpeaking(false);
+    };
+  }, [stream, isMuted]);
+
+  return isSpeaking;
+}
+
+// ParticipantCard displays video stream or audio avatar with live speaking indicator & maximize option
+function ParticipantCard({
+  username,
+  stream,
+  isLocal = false,
+  isMuted = false,
+  isDeafened = false,
+  connected = true,
+  videoTrack = null,
+  isScreenSharing = false,
+  isScreen = false,
+  hasVideoSignaled = false,
+  onMaximize = null,
+}) {
+  const isSpeaking = useAudioActivity(stream, isMuted);
+  const [hasRemoteTrack, setHasRemoteTrack] = useState(false);
+  const videoRef = useRef(null);
+  const localStreamRef = useRef(null);
+
+  // Monitor remote video tracks
+  useEffect(() => {
+    if (isLocal) return;
+    if (!stream) {
+      setHasRemoteTrack(false);
+      return;
+    }
+
+    const checkTracks = () => {
+      const vTracks = stream.getVideoTracks();
+      const hasLiveTrack = vTracks.length > 0 && vTracks.some((t) => t.readyState === "live" && !t.muted);
+      setHasRemoteTrack(hasLiveTrack);
+    };
+
+    checkTracks();
+
+    const vTracks = stream.getVideoTracks();
+    vTracks.forEach((t) => {
+      t.onmute = checkTracks;
+      t.onunmute = checkTracks;
+      t.onended = checkTracks;
+    });
+
+    stream.onaddtrack = checkTracks;
+    stream.onremovetrack = checkTracks;
+
+    return () => {
+      stream.onaddtrack = null;
+      stream.onremovetrack = null;
+      vTracks.forEach((t) => {
+        t.onmute = null;
+        t.onunmute = null;
+        t.onended = null;
+      });
+    };
+  }, [stream, isLocal]);
+
+  const showVideo = isLocal
+    ? Boolean(videoTrack)
+    : (hasRemoteTrack || hasVideoSignaled || (stream && stream.getVideoTracks().length > 0));
+
+  // Reliably assign stream without re-creating MediaStream or re-attaching on unchanged renders
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el) return;
+
+    if (isLocal) {
+      if (videoTrack) {
+        if (!localStreamRef.current || localStreamRef.current.getVideoTracks()[0] !== videoTrack) {
+          localStreamRef.current = new MediaStream([videoTrack]);
+        }
+        if (el.srcObject !== localStreamRef.current) {
+          el.srcObject = localStreamRef.current;
+        }
+        el.play().catch(() => {});
+      } else {
+        el.srcObject = null;
+      }
+    } else {
+      if (stream && showVideo) {
+        if (el.srcObject !== stream) {
+          el.srcObject = stream;
+        }
+        el.play().catch(() => {});
+      } else {
+        el.srcObject = null;
+      }
+    }
+  }, [showVideo, isLocal, videoTrack, stream]);
+
+  // Permanently invert/mirror all camera views on both local and remote, while screen sharing remains normal
+  const isCamera = isLocal ? !isScreenSharing : !isScreen;
+
+  return (
+    <div className={`voice-call-participant ${showVideo ? "has-video" : ""}`}>
+      {showVideo ? (
+        <div className={`voice-call-video-wrapper ${isSpeaking ? "is-speaking" : ""}`}>
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            className={`voice-call-video ${isCamera ? "is-mirrored" : ""}`}
+          />
+
+          <div className="voice-call-video-topbar">
+            {onMaximize && (
+              <button
+                type="button"
+                className="video-maximize-btn"
+                onClick={onMaximize}
+                title="Full size video / screen share"
+                aria-label="Maximize video"
+              >
+                <Icon name="maximize" size={14} />
+              </button>
+            )}
+          </div>
+
+          <span className="voice-call-video-overlay">
+            {username} {isMuted && "🔇"}
+          </span>
+        </div>
+      ) : (
+        <div className={`voice-call-avatar ${isSpeaking ? "is-speaking" : ""}`}>
+          <Icon name={isLocal ? "audio-lines" : "user-round"} size={28} />
+        </div>
+      )}
+
+      <strong>{username}</strong>
+      <span>
+        {isMuted
+          ? "Microphone muted"
+          : isSpeaking
+          ? "Speaking..."
+          : connected
+          ? (isLocal ? "Your microphone" : (showVideo ? "Video / Screen" : "Connected"))
+          : "Connecting..."}
+      </span>
+
+      {!isLocal && stream && <RemoteAudioStream stream={stream} isDeafened={isDeafened} />}
+    </div>
+  );
+}
+
+// Fullscreen video viewer with stable stream assignment to prevent flickering
+function FullscreenVideoPlayer({ isLocal, videoTrack, stream, isScreen = false }) {
+  const videoRef = useRef(null);
+  const localStreamRef = useRef(null);
+
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el) return;
+
+    if (isLocal) {
+      if (videoTrack) {
+        if (!localStreamRef.current || localStreamRef.current.getVideoTracks()[0] !== videoTrack) {
+          localStreamRef.current = new MediaStream([videoTrack]);
+        }
+        if (el.srcObject !== localStreamRef.current) {
+          el.srcObject = localStreamRef.current;
+        }
+        el.play().catch(() => {});
+      } else {
+        el.srcObject = null;
+      }
+    } else {
+      if (stream) {
+        if (el.srcObject !== stream) {
+          el.srcObject = stream;
+        }
+        el.play().catch(() => {});
+      } else {
+        el.srcObject = null;
+      }
+    }
+  }, [isLocal, videoTrack, stream]);
+
+  // Permanently invert/mirror camera views in fullscreen as well
+  const isCamera = !isScreen;
+
+  return (
+    <video
+      ref={videoRef}
+      autoPlay
+      playsInline
+      muted
+      className={`video-fullscreen-player ${isCamera ? "is-mirrored" : ""}`}
+    />
+  );
+}
+
+export default function VoiceCallTest({ socket, channelId, initialMode = "voice", onClose }) {
   const [status, setStatus] = useState("Not connected");
   const [isJoined, setIsJoined] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  const [isDeafened, setIsDeafened] = useState(false);
+  const [callSeconds, setCallSeconds] = useState(0);
+  const [isVideoOn, setIsVideoOn] = useState(false);
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [localVideoTrack, setLocalVideoTrack] = useState(null);
   const [remoteParticipants, setRemoteParticipants] = useState([]);
+  const [fullscreenData, setFullscreenData] = useState(null);
 
   const localAudioRef = useRef(null);
   const localStreamRef = useRef(null);
+  const localVideoTrackRef = useRef(null);
+
+  // Close fullscreen on Escape key
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape" && fullscreenData) {
+        setFullscreenData(null);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [fullscreenData]);
+
+  // If fullscreen participant stops video, close fullscreen
+  useEffect(() => {
+    if (!fullscreenData) return;
+    if (fullscreenData.isLocal && !localVideoTrack) {
+      setFullscreenData(null);
+    }
+  }, [localVideoTrack, fullscreenData]);
 
   // Each participant gets their own connection and ICE candidate queue.
   const peerConnectionsRef = useRef(new Map());
+  const remoteStreamsRef = useRef(new Map());
   const pendingCandidatesRef = useRef(new Map());
   const joinedRef = useRef(false);
   const startCallRef = useRef(null);
   const hangUpRef = useRef(null);
+  const autoStartedRef = useRef(false);
+
+  // Auto-start call directly on mount based on initialMode
+  useEffect(() => {
+    if (autoStartedRef.current) return;
+    autoStartedRef.current = true;
+    const timer = setTimeout(() => {
+      startCallRef.current?.(initialMode === "video");
+    }, 60);
+    return () => clearTimeout(timer);
+  }, [initialMode]);
+
+  // Propagates video track changes across all WebRTC peer connections and triggers renegotiation
+  const updateVideoTracksOnPeers = async (newTrack, isScreen = false) => {
+    socket?.emit("voice:video-toggle", {
+      channelId,
+      hasVideo: Boolean(newTrack),
+      isScreen: Boolean(isScreen),
+    });
+
+    for (const [peerId, pc] of peerConnectionsRef.current.entries()) {
+      if (!pc || pc.signalingState === "closed") continue;
+
+      try {
+        let videoTransceiver = pc.getTransceivers().find(
+          (t) => t.sender.track?.kind === "video" || t.receiver.track?.kind === "video"
+        );
+
+        if (videoTransceiver) {
+          videoTransceiver.direction = newTrack ? "sendrecv" : "recvonly";
+          await videoTransceiver.sender.replaceTrack(newTrack);
+        } else if (newTrack) {
+          pc.addTrack(newTrack, localStreamRef.current || new MediaStream());
+        }
+
+        // Renegotiate with peer if connection is in stable state
+        if (pc.signalingState === "stable") {
+          const offer = await pc.createOffer();
+          if (offer.sdp) offer.sdp = optimizeSdp(offer.sdp);
+          await pc.setLocalDescription(offer);
+          socket.emit("voice:offer", {
+            to: peerId,
+            channelId,
+            description: pc.localDescription,
+          });
+        }
+      } catch (err) {
+        console.warn("Failed to update video track on peer:", peerId, err);
+      }
+    }
+  };
 
   useEffect(() => {
     if (!socket || !channelId) return;
@@ -132,7 +525,66 @@ export default function VoiceCallTest({ socket, channelId }) {
             username: "Participant",
             stream: null,
             connected: false,
+            hasVideoSignaled: false,
             ...changes,
+          },
+        ];
+      });
+    };
+
+    const syncPeerMedia = (peerId, customUsername) => {
+      const pc = peerConnectionsRef.current.get(peerId);
+      if (!pc) return;
+
+      let peerStream = remoteStreamsRef.current.get(peerId);
+      if (!peerStream) {
+        peerStream = new MediaStream();
+        remoteStreamsRef.current.set(peerId, peerStream);
+      }
+
+      // Collect all incoming tracks from all receivers
+      const receivers = pc.getReceivers();
+      for (const receiver of receivers) {
+        const track = receiver.track;
+        if (track) {
+          if (!peerStream.getTracks().some((t) => t.id === track.id)) {
+            peerStream.addTrack(track);
+          }
+          track.onunmute = () => syncPeerMedia(peerId);
+          track.onmute = () => syncPeerMedia(peerId);
+          track.onended = () => syncPeerMedia(peerId);
+        }
+      }
+
+      const hasLiveVideo = peerStream.getVideoTracks().some(
+        (t) => t.readyState === "live" && !t.muted
+      );
+
+      setRemoteParticipants((prev) => {
+        const existing = prev.find((p) => p.peerId === peerId);
+        const name = customUsername || existing?.username || "Participant";
+        if (existing) {
+          return prev.map((p) =>
+            p.peerId === peerId
+              ? {
+                  ...p,
+                  username: name,
+                  stream: peerStream,
+                  connected: pc.connectionState === "connected",
+                  hasVideoSignaled: hasLiveVideo ? true : p.hasVideoSignaled,
+                }
+              : p
+          );
+        }
+
+        return [
+          ...prev,
+          {
+            peerId,
+            username: name,
+            stream: peerStream,
+            connected: pc.connectionState === "connected",
+            hasVideoSignaled: hasLiveVideo,
           },
         ];
       });
@@ -144,7 +596,7 @@ export default function VoiceCallTest({ socket, channelId }) {
       );
     };
 
-    const createPeerConnection = (peerId, username = "Participant") => {
+    const createPeerConnection = (peerId, username = "Participant", isInitiator = false) => {
       const existing = peerConnectionsRef.current.get(peerId);
 
       if (existing) {
@@ -161,15 +613,31 @@ export default function VoiceCallTest({ socket, channelId }) {
       peerConnectionsRef.current.set(peerId, pc);
       pendingCandidatesRef.current.set(peerId, []);
 
-      const stream = localStreamRef.current;
+      let peerStream = remoteStreamsRef.current.get(peerId);
+      if (!peerStream) {
+        peerStream = new MediaStream();
+        remoteStreamsRef.current.set(peerId, peerStream);
+      }
 
+      const stream = localStreamRef.current;
       if (stream) {
         stream.getTracks().forEach((track) => {
           pc.addTrack(track, stream);
         });
       }
 
-      updateParticipant(peerId, { username });
+      // Add local video track if enabled, or prepare video transceiver
+      if (localVideoTrackRef.current) {
+        pc.addTrack(localVideoTrackRef.current, localStreamRef.current || new MediaStream());
+      } else {
+        try {
+          pc.addTransceiver("video", { direction: "sendrecv" });
+        } catch {
+          // Fallback
+        }
+      }
+
+      updateParticipant(peerId, { username, stream: peerStream });
 
       pc.onicecandidate = (event) => {
         if (event.candidate) {
@@ -181,15 +649,8 @@ export default function VoiceCallTest({ socket, channelId }) {
         }
       };
 
-      pc.ontrack = (event) => {
-        const remoteStream =
-          event.streams?.[0] ||
-          new MediaStream([event.track]);
-
-        updateParticipant(peerId, {
-          username,
-          stream: remoteStream,
-        });
+      pc.ontrack = () => {
+        syncPeerMedia(peerId, username);
       };
 
       pc.onconnectionstatechange = () => {
@@ -200,10 +661,11 @@ export default function VoiceCallTest({ socket, channelId }) {
             username,
             connected: true,
           });
-          setStatus("Voice connected");
+          syncPeerMedia(peerId, username);
+          setStatus("Voice & media connected");
         } else if (pc.connectionState === "connecting") {
           updateParticipant(peerId, { connected: false });
-          setStatus("Connecting audio...");
+          setStatus("Connecting media...");
         } else if (
           pc.connectionState === "failed" ||
           pc.connectionState === "closed"
@@ -211,7 +673,7 @@ export default function VoiceCallTest({ socket, channelId }) {
           updateParticipant(peerId, { connected: false });
         } else if (pc.connectionState === "disconnected") {
           updateParticipant(peerId, { connected: false });
-          setStatus("Audio connection interrupted");
+          setStatus("Media connection interrupted");
         }
       };
 
@@ -250,10 +712,15 @@ export default function VoiceCallTest({ socket, channelId }) {
 
       peerConnectionsRef.current.delete(peerId);
       pendingCandidatesRef.current.delete(peerId);
+      const peerStream = remoteStreamsRef.current.get(peerId);
+      if (peerStream) {
+        peerStream.getTracks().forEach((t) => t.stop());
+        remoteStreamsRef.current.delete(peerId);
+      }
       removeParticipant(peerId);
 
       if (joinedRef.current) {
-        setStatus("Participant left the voice call");
+        setStatus("Participant left the call");
       }
     };
 
@@ -263,7 +730,8 @@ export default function VoiceCallTest({ socket, channelId }) {
       try {
         const pc = createPeerConnection(
           from,
-          username || "Participant"
+          username || "Participant",
+          false
         );
 
         await pc.setRemoteDescription(
@@ -271,6 +739,7 @@ export default function VoiceCallTest({ socket, channelId }) {
         );
 
         await addPendingCandidates(from, pc);
+        syncPeerMedia(from, username);
 
         const answer = await pc.createAnswer();
         if (answer.sdp) {
@@ -283,9 +752,11 @@ export default function VoiceCallTest({ socket, channelId }) {
           channelId,
           description: pc.localDescription,
         });
+
+        syncPeerMedia(from, username);
       } catch (error) {
-        console.error("Could not answer voice call:", error);
-        setStatus("Could not establish audio");
+        console.error("Could not answer call:", error);
+        setStatus("Could not establish media");
       }
     };
 
@@ -299,6 +770,7 @@ export default function VoiceCallTest({ socket, channelId }) {
         );
 
         await addPendingCandidates(from, pc);
+        syncPeerMedia(from);
       } catch (error) {
         console.error("Could not process voice answer:", error);
       }
@@ -324,19 +796,20 @@ export default function VoiceCallTest({ socket, channelId }) {
       }
     };
 
+    const onVideoToggle = ({ peerId, hasVideo, isScreen }) => {
+      syncPeerMedia(peerId);
+      updateParticipant(peerId, { hasVideoSignaled: Boolean(hasVideo), isScreen: Boolean(isScreen) });
+    };
+
     socket.on("voice:peer-joined", onPeerJoined);
     socket.on("voice:peer-left", onPeerLeft);
     socket.on("voice:offer", onOffer);
     socket.on("voice:answer", onAnswer);
     socket.on("voice:ice-candidate", onIceCandidate);
+    socket.on("voice:video-toggle", onVideoToggle);
 
-    startCallRef.current = async () => {
+    startCallRef.current = async (enableVideo = false) => {
       if (joinedRef.current) return;
-
-      if (!socket.connected) {
-        setStatus("Real-time connection is not ready");
-        return;
-      }
 
       if (!navigator.mediaDevices?.getUserMedia) {
         setStatus("Microphone access is unavailable in this browser");
@@ -346,7 +819,7 @@ export default function VoiceCallTest({ socket, channelId }) {
       let stream;
 
       try {
-        setStatus("Requesting microphone access...");
+        setStatus(enableVideo ? "Starting video call..." : "Starting voice call...");
 
         stream = await navigator.mediaDevices.getUserMedia({
           audio: {
@@ -363,26 +836,71 @@ export default function VoiceCallTest({ socket, channelId }) {
         }
 
         localStreamRef.current = stream;
-        setStatus("Joining voice channel...");
+
+        // Directly acquire video if video mode was requested
+        let vTrack = null;
+        if (enableVideo) {
+          try {
+            const vStream = await navigator.mediaDevices.getUserMedia({
+              video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { max: 30 } },
+            });
+            if (disposed) {
+              vStream.getTracks().forEach((t) => t.stop());
+            } else {
+              vTrack = vStream.getVideoTracks()[0];
+              if (vTrack) {
+                localVideoTrackRef.current = vTrack;
+                setLocalVideoTrack(vTrack);
+                setIsVideoOn(true);
+
+                vTrack.onended = () => {
+                  setIsVideoOn(false);
+                  setLocalVideoTrack(null);
+                  localVideoTrackRef.current = null;
+                  updateVideoTracksOnPeers(null);
+                };
+              }
+            }
+          } catch (camErr) {
+            console.warn("Could not access camera for video call:", camErr);
+            setStatus("Microphone connected; camera access denied");
+          }
+        }
+
+        setStatus("Joining voice & video channel...");
 
         socket.emit("voice:join", channelId, async (result) => {
           if (disposed) {
             stream.getTracks().forEach((track) => track.stop());
+            if (vTrack) vTrack.stop();
             return;
           }
 
           if (!result?.ok) {
             stream.getTracks().forEach((track) => track.stop());
+            if (vTrack) vTrack.stop();
             localStreamRef.current = null;
+            localVideoTrackRef.current = null;
+            setLocalVideoTrack(null);
+            setIsVideoOn(false);
             setStatus(result?.message || "Could not join voice");
             return;
           }
 
           joinedRef.current = true;
           setIsJoined(true);
-          setStatus("Joined voice channel; waiting for participants...");
+          sounds.playJoinSound();
+          setStatus("Connected to channel; waiting for participants...");
 
-          // Create a connection to every participant already in the room.
+          if (vTrack) {
+            socket.emit("voice:video-toggle", {
+              channelId,
+              hasVideo: true,
+              isScreen: false,
+            });
+          }
+
+          // Create an initiating connection to every participant already in the room.
           const peers = result.peers || [];
 
           for (const peer of peers) {
@@ -391,7 +909,8 @@ export default function VoiceCallTest({ socket, channelId }) {
             try {
               const pc = createPeerConnection(
                 peer.peerId,
-                peer.username || "Participant"
+                peer.username || "Participant",
+                true
               );
 
               const offer = await pc.createOffer();
@@ -431,12 +950,15 @@ export default function VoiceCallTest({ socket, channelId }) {
     };
 
     hangUpRef.current = () => {
+      sounds.playLeaveSound();
       if (joinedRef.current) {
         socket.emit("voice:leave", channelId);
       }
 
       joinedRef.current = false;
       setIsJoined(false);
+      setIsDeafened(false);
+      setFullscreenData(null);
 
       peerConnectionsRef.current.forEach((pc) => {
         pc.ontrack = null;
@@ -447,14 +969,28 @@ export default function VoiceCallTest({ socket, channelId }) {
       peerConnectionsRef.current.clear();
       pendingCandidatesRef.current.clear();
 
+      remoteStreamsRef.current.forEach((st) => {
+        st.getTracks().forEach((t) => t.stop());
+      });
+      remoteStreamsRef.current.clear();
+
       localStreamRef.current?.getTracks().forEach((track) => {
         track.stop();
       });
 
+      if (localVideoTrackRef.current) {
+        localVideoTrackRef.current.stop();
+        localVideoTrackRef.current = null;
+      }
+
       localStreamRef.current = null;
+      setLocalVideoTrack(null);
+      setIsVideoOn(false);
+      setIsScreenSharing(false);
       setRemoteParticipants([]);
       setIsMuted(false);
       setStatus("Not connected");
+      onClose?.();
     };
 
     return () => {
@@ -475,9 +1011,19 @@ export default function VoiceCallTest({ socket, channelId }) {
       peerConnectionsRef.current.clear();
       pendingCandidatesRef.current.clear();
 
+      remoteStreamsRef.current.forEach((st) => {
+        st.getTracks().forEach((t) => t.stop());
+      });
+      remoteStreamsRef.current.clear();
+
       localStreamRef.current?.getTracks().forEach((track) => {
         track.stop();
       });
+
+      if (localVideoTrackRef.current) {
+        localVideoTrackRef.current.stop();
+        localVideoTrackRef.current = null;
+      }
 
       localStreamRef.current = null;
 
@@ -486,11 +1032,29 @@ export default function VoiceCallTest({ socket, channelId }) {
       socket.off("voice:offer", onOffer);
       socket.off("voice:answer", onAnswer);
       socket.off("voice:ice-candidate", onIceCandidate);
+      socket.off("voice:video-toggle", onVideoToggle);
 
       startCallRef.current = null;
       hangUpRef.current = null;
     };
   }, [socket, channelId]);
+
+  useEffect(() => {
+    if (!isJoined) {
+      setCallSeconds(0);
+      return;
+    }
+    const timer = setInterval(() => {
+      setCallSeconds((s) => s + 1);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [isJoined]);
+
+  const formatCallTime = (totalSec) => {
+    const m = Math.floor(totalSec / 60).toString().padStart(2, "0");
+    const s = (totalSec % 60).toString().padStart(2, "0");
+    return `${m}:${s}`;
+  };
 
   const toggleMute = () => {
     const stream = localStreamRef.current;
@@ -499,10 +1063,105 @@ export default function VoiceCallTest({ socket, channelId }) {
     const nextMuted = !isMuted;
 
     stream.getAudioTracks().forEach((track) => {
-      track.enabled = !nextMuted;
+      track.enabled = !nextMuted && !isDeafened;
     });
 
     setIsMuted(nextMuted);
+    sounds.playMuteSound(nextMuted);
+  };
+
+  const toggleDeafen = () => {
+    const nextDeafened = !isDeafened;
+    setIsDeafened(nextDeafened);
+    sounds.playDeafenSound(nextDeafened);
+    const stream = localStreamRef.current;
+    if (stream) {
+      stream.getAudioTracks().forEach((track) => {
+        track.enabled = !nextDeafened && !isMuted;
+      });
+    }
+  };
+
+  const toggleVideo = async () => {
+    if (!joinedRef.current) return;
+
+    if (isVideoOn) {
+      if (localVideoTrackRef.current && !isScreenSharing) {
+        localVideoTrackRef.current.stop();
+        localVideoTrackRef.current = null;
+      }
+      setLocalVideoTrack(null);
+      setIsVideoOn(false);
+      await updateVideoTracksOnPeers(null);
+    } else {
+      try {
+        if (isScreenSharing && localVideoTrackRef.current) {
+          localVideoTrackRef.current.stop();
+          setIsScreenSharing(false);
+        }
+
+        const vStream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { max: 30 } },
+        });
+        const vTrack = vStream.getVideoTracks()[0];
+        localVideoTrackRef.current = vTrack;
+        setLocalVideoTrack(vTrack);
+        setIsVideoOn(true);
+
+        vTrack.onended = () => {
+          setIsVideoOn(false);
+          setLocalVideoTrack(null);
+          localVideoTrackRef.current = null;
+          updateVideoTracksOnPeers(null, false);
+        };
+
+        await updateVideoTracksOnPeers(vTrack, false);
+      } catch (err) {
+        console.error("Camera access failed:", err);
+        setStatus("Could not access camera");
+      }
+    }
+  };
+
+  const toggleScreenShare = async () => {
+    if (!joinedRef.current) return;
+
+    if (isScreenSharing) {
+      if (localVideoTrackRef.current) {
+        localVideoTrackRef.current.stop();
+        localVideoTrackRef.current = null;
+      }
+      setLocalVideoTrack(null);
+      setIsScreenSharing(false);
+      await updateVideoTracksOnPeers(null, false);
+    } else {
+      try {
+        if (isVideoOn && localVideoTrackRef.current) {
+          localVideoTrackRef.current.stop();
+          setIsVideoOn(false);
+        }
+
+        const sStream = await navigator.mediaDevices.getDisplayMedia({
+          video: { cursor: "always" },
+          audio: false,
+        });
+        const sTrack = sStream.getVideoTracks()[0];
+        localVideoTrackRef.current = sTrack;
+        setLocalVideoTrack(sTrack);
+        setIsScreenSharing(true);
+
+        sTrack.onended = () => {
+          setIsScreenSharing(false);
+          setLocalVideoTrack(null);
+          localVideoTrackRef.current = null;
+          updateVideoTracksOnPeers(null, false);
+        };
+
+        await updateVideoTracksOnPeers(sTrack, true);
+      } catch (err) {
+        console.warn("Screen share cancelled:", err);
+      }
+    }
   };
 
   return (
@@ -513,11 +1172,11 @@ export default function VoiceCallTest({ socket, channelId }) {
         </div>
 
         <div className="voice-call-heading-copy">
-          <h2>Voice channel</h2>
+          <h2>Voice & video channel</h2>
           <p>
             {isJoined
               ? "You're connected to the conversation"
-              : "Connect and talk in real time"}
+              : "Connect, talk, and share your screen in real time"}
           </p>
         </div>
 
@@ -529,55 +1188,55 @@ export default function VoiceCallTest({ socket, channelId }) {
         >
           <span />
           {remoteParticipants.some((p) => p.connected)
-            ? "Connected"
+            ? `Connected · ${formatCallTime(callSeconds)}`
             : isJoined
-              ? "In voice"
+              ? `In call · ${formatCallTime(callSeconds)}`
               : "Ready"}
         </span>
       </div>
 
       <div className="voice-call-body">
-        <div className="voice-call-participant">
-          <div
-            className={`voice-call-avatar ${isJoined ? "is-speaking" : ""
-              }`}
-          >
-            <Icon name="audio-lines" size={28} />
-          </div>
-
-          <strong>You</strong>
-          <span>
-            {isMuted
-              ? "Microphone muted"
-              : isJoined
-                ? "Your microphone"
-                : "Not in voice"}
-          </span>
-        </div>
+        <ParticipantCard
+          username="You"
+          stream={localStreamRef.current}
+          isLocal={true}
+          isMuted={isMuted}
+          isDeafened={isDeafened}
+          connected={isJoined}
+          videoTrack={localVideoTrack}
+          isScreenSharing={isScreenSharing}
+          onMaximize={localVideoTrack ? () => setFullscreenData({
+            username: "You",
+            stream: null,
+            videoTrack: localVideoTrack,
+            isLocal: true,
+            isScreen: isScreenSharing,
+          }) : null}
+        />
 
         {remoteParticipants.map((participant) => (
-          <div
-            className="voice-call-participant"
+          <ParticipantCard
             key={participant.peerId}
-          >
-            <div
-              className={`voice-call-avatar ${participant.connected ? "is-speaking" : ""
-                }`}
-            >
-              <Icon name="user-round" size={28} />
-            </div>
-
-            <strong>{participant.username}</strong>
-            <span>
-              {participant.connected
-                ? "Connected"
-                : "Connecting…"}
-            </span>
-
-            {participant.stream && (
-              <RemoteAudioStream stream={participant.stream} />
-            )}
-          </div>
+            username={participant.username}
+            stream={participant.stream}
+            isLocal={false}
+            isMuted={false}
+            isDeafened={isDeafened}
+            connected={participant.connected}
+            isScreen={participant.isScreen}
+            hasVideoSignaled={participant.hasVideoSignaled}
+            onMaximize={
+              participant.stream?.getVideoTracks()?.length > 0 || participant.hasVideoSignaled
+                ? () => setFullscreenData({
+                    username: participant.username,
+                    stream: participant.stream,
+                    videoTrack: null,
+                    isLocal: false,
+                    isScreen: participant.isScreen,
+                  })
+                : null
+            }
+          />
         ))}
 
         {!isJoined && (
@@ -586,7 +1245,7 @@ export default function VoiceCallTest({ socket, channelId }) {
               <Icon name="headphones" size={22} />
             </span>
             <strong>Ready when you are</strong>
-            <p>Join the channel to start talking with others.</p>
+            <p>Join the channel to start talking, video calling, or sharing your screen.</p>
           </div>
         )}
 
@@ -595,8 +1254,8 @@ export default function VoiceCallTest({ socket, channelId }) {
             <span className="voice-call-empty-icon">
               <Icon name="headphones" size={22} />
             </span>
-            <strong>You're in the voice channel</strong>
-            <p>Other participants will appear here when they join.</p>
+            <strong>You're in the channel</strong>
+            <p>Turn on your camera or share your screen. Others will appear here when they join.</p>
           </div>
         )}
       </div>
@@ -615,14 +1274,13 @@ export default function VoiceCallTest({ socket, channelId }) {
               onClick={() => startCallRef.current?.()}
             >
               <Icon name="phone" size={17} />
-              Join voice
+              Join call
             </button>
           ) : (
             <>
               <button
                 type="button"
-                className={`voice-control-button ${isMuted ? "voice-muted-button" : ""
-                  }`}
+                className={`voice-control-button ${isMuted ? "voice-muted-button" : ""}`}
                 onClick={toggleMute}
                 title={isMuted ? "Unmute microphone" : "Mute microphone"}
               >
@@ -631,6 +1289,45 @@ export default function VoiceCallTest({ socket, channelId }) {
                   size={18}
                 />
                 {isMuted ? "Unmute" : "Mute"}
+              </button>
+
+              <button
+                type="button"
+                className={`voice-control-button ${isDeafened ? "voice-muted-button" : ""}`}
+                onClick={toggleDeafen}
+                title={isDeafened ? "Undeafen audio" : "Deafen audio"}
+              >
+                <Icon
+                  name={isDeafened ? "headphones-off" : "headphones"}
+                  size={18}
+                />
+                {isDeafened ? "Undeafen" : "Deafen"}
+              </button>
+
+              <button
+                type="button"
+                className={`voice-control-button ${isVideoOn ? "voice-active-button" : ""}`}
+                onClick={toggleVideo}
+                title={isVideoOn ? "Turn camera off" : "Turn camera on"}
+              >
+                <Icon
+                  name={isVideoOn ? "video-off" : "video"}
+                  size={18}
+                />
+                {isVideoOn ? "Camera on" : "Camera"}
+              </button>
+
+              <button
+                type="button"
+                className={`voice-control-button ${isScreenSharing ? "voice-active-button" : ""}`}
+                onClick={toggleScreenShare}
+                title={isScreenSharing ? "Stop sharing screen" : "Share your screen"}
+              >
+                <Icon
+                  name={isScreenSharing ? "screen-off" : "screen"}
+                  size={18}
+                />
+                {isScreenSharing ? "Sharing" : "Screen"}
               </button>
 
               <button
@@ -647,6 +1344,54 @@ export default function VoiceCallTest({ socket, channelId }) {
       </div>
 
       <audio ref={localAudioRef} muted autoPlay />
+
+      {/* Fullscreen / Theater Video Modal */}
+      {fullscreenData && (
+        <div className="video-fullscreen-modal" onClick={() => setFullscreenData(null)}>
+          <div className="video-fullscreen-container" onClick={(e) => e.stopPropagation()}>
+            <div className="video-fullscreen-header">
+              <div className="video-fullscreen-title">
+                <span className="live-pill">LIVE</span>
+                <h3>{fullscreenData.username}</h3>
+                <span>{fullscreenData.isLocal ? "(Your stream)" : "Screen / Video Stream"}</span>
+              </div>
+              <div className="video-fullscreen-actions">
+                <button
+                  type="button"
+                  className="video-fullscreen-icon-btn"
+                  onClick={() => {
+                    if (!document.fullscreenElement) {
+                      document.documentElement.requestFullscreen().catch(() => {});
+                    } else {
+                      document.exitFullscreen().catch(() => {});
+                    }
+                  }}
+                  title="Toggle native fullscreen"
+                >
+                  <Icon name="maximize" size={16} />
+                </button>
+                <button
+                  type="button"
+                  className="video-fullscreen-close-btn"
+                  onClick={() => setFullscreenData(null)}
+                  title="Exit full size (Esc)"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+
+            <div className="video-fullscreen-stage">
+              <FullscreenVideoPlayer
+                isLocal={fullscreenData.isLocal}
+                videoTrack={fullscreenData.videoTrack}
+                stream={fullscreenData.stream}
+                isScreen={fullscreenData.isScreen}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
